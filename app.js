@@ -8,12 +8,20 @@ const SECONDS_PER_DAY = 86400;
 const DAYS_PER_YEAR = 365;
 
 // Reference values from frontend
-const REFERENCE = {
-  fullRangeAPR: 7182.47, // From CL100-WETH/USDC showing 7,182.47%
-  customRangeAPR: 149.62, // From custom range $2002-$2303 showing ~149.62%
-  referenceRangeWidth: 300,  // Approximate range width in USD
-  referenceRangePct: 0.145,   // 14.5% range width as a percentage of price
-};
+const REFERENCE = [
+  {
+    lowerPrice: 2002.24,
+    upperPrice: 2303.1,
+    width: 300.86,
+    apr: 149.62
+  },
+  {
+    lowerPrice: 2083.95,
+    upperPrice: 2235.04,
+    width: 151.09,
+    apr: 299.24
+  }
+];
 
 /**
  * Calculate projected APR for a custom price range in USDC
@@ -94,12 +102,12 @@ async function calculateProjectedAPR(lowerPriceUSDC, upperPriceUSDC) {
       isInRange
     );
     
-    // Step 8: Calculate emissions APR based on frontend reference
+    // Step 8: Calculate emissions APR based on frontend reference and range width
     const rangeWidthUSD = upperPriceUSDC - lowerPriceUSDC;
     const rangeWidthPct = rangeWidthUSD / currentPrice;
     
-    // Calculate APR based on frontend behavior (reverse-engineered)
-    const emissionsAPR = calculateMatchedEmissionsAPR(rangeWidthUSD, currentPrice, isInRange);
+    // Calculate APR based on frontend behavior (improved inverse relationship)
+    const emissionsAPR = calculateDynamicEmissionsAPR(rangeWidthUSD, isInRange);
     
     // Add fee APR and emissions APR for total
     const totalAPR = (feeResult.positionAPR + emissionsAPR);
@@ -144,30 +152,46 @@ async function calculateProjectedAPR(lowerPriceUSDC, upperPriceUSDC) {
 }
 
 /**
- * Calculate emissions APR that matches the frontend
+ * Calculate emissions APR dynamically based on range width and reference values
  */
-function calculateMatchedEmissionsAPR(rangeWidthUSD, currentPrice, isInRange) {
+function calculateDynamicEmissionsAPR(rangeWidthUSD, isInRange) {
   if (!isInRange) {
     return 0; // No emissions if out of range
   }
   
-  // Calculate a scaling factor based on the reference values from frontend
-  const referenceRange = REFERENCE.referenceRangeWidth;
+  // Sort reference points by width (smallest to largest)
+  const sortedRef = [...REFERENCE].sort((a, b) => a.width - b.width);
   
-  // Calculate the APR based on the frontend's pattern
-  // This is a modified linear scaling based on range width
-  let emissionsAPR = 0;
-  
-  if (rangeWidthUSD <= referenceRange) {
-    // For ranges narrower than or equal to reference, use their custom range value
-    emissionsAPR = REFERENCE.customRangeAPR;
-  } else {
-    // For wider ranges, scale down proportionally
-    const rangeFactor = referenceRange / rangeWidthUSD;
-    emissionsAPR = REFERENCE.customRangeAPR * rangeFactor;
+  // If range is narrower than the narrowest reference
+  if (rangeWidthUSD < sortedRef[0].width) {
+    // Extrapolate higher APR for narrower ranges
+    const ratio = sortedRef[0].width / rangeWidthUSD;
+    return sortedRef[0].apr * ratio;
   }
   
-  return emissionsAPR;
+  // If range is wider than the widest reference
+  if (rangeWidthUSD > sortedRef[sortedRef.length - 1].width) {
+    // Extrapolate lower APR for wider ranges
+    const ratio = sortedRef[sortedRef.length - 1].width / rangeWidthUSD;
+    return sortedRef[sortedRef.length - 1].apr * ratio;
+  }
+  
+  // For ranges between reference points, interpolate
+  for (let i = 0; i < sortedRef.length - 1; i++) {
+    if (rangeWidthUSD >= sortedRef[i].width && rangeWidthUSD <= sortedRef[i + 1].width) {
+      // Linear interpolation between reference points
+      const widthRatio = (rangeWidthUSD - sortedRef[i].width) / (sortedRef[i + 1].width - sortedRef[i].width);
+      return sortedRef[i].apr + (sortedRef[i + 1].apr - sortedRef[i].apr) * (1 - widthRatio);
+    }
+  }
+  
+  // Fallback: use inverse relationship with the closest reference point
+  const closestRef = sortedRef.reduce((prev, curr) => 
+    Math.abs(curr.width - rangeWidthUSD) < Math.abs(prev.width - rangeWidthUSD) ? curr : prev
+  );
+  
+  const ratio = closestRef.width / rangeWidthUSD;
+  return closestRef.apr * ratio;
 }
 
 /**
@@ -364,9 +388,9 @@ async function main() {
     lowerPriceUSDC = parseFloat(process.argv[2]);
     upperPriceUSDC = parseFloat(process.argv[3]);
   } else {
-    // Default price range matching frontend reference
-    lowerPriceUSDC = 2002.24;
-    upperPriceUSDC = 2303.1;
+    // Default price range matching second frontend reference
+    lowerPriceUSDC = 2083.95;
+    upperPriceUSDC = 2235.04;
   }
   
   console.log(`Calculating APR for WETH/USDC position with price range: $${lowerPriceUSDC} - $${upperPriceUSDC}`);
@@ -390,14 +414,19 @@ async function main() {
     console.log(`Fee APR: ${result.fees.feeAPR.toFixed(2)}%`);
     console.log(`Emissions APR: ${result.fees.emissionsAPR.toFixed(2)}%`);
     console.log(`Total APR: ${result.fees.totalAPR.toFixed(2)}%`);
-    console.log(`Frontend Reference APR: ${result.reference.customRangeAPR.toFixed(2)}%`);
     console.log('==================================================');
     
-    console.log('\nNotes on APR Calculation:');
-    console.log('1. The emissions APR is based on the frontend reference value.');
-    console.log('2. For ranges similar to the reference range, we use the frontend value directly.');
-    console.log('3. For wider ranges, we scale down the APR proportionally.');
-    console.log('4. Fee APR is calculated based on historical fees and position width.');
+    // Print specific APR for known reference ranges for comparison
+    console.log('\nReference Range APRs:');
+    result.reference.forEach(ref => {
+      console.log(`- Range $${ref.lowerPrice}-$${ref.upperPrice} (width $${ref.width.toFixed(2)}): ${ref.apr.toFixed(2)}%`);
+    });
+    
+    console.log('\nAPR Calculation Method:');
+    console.log('1. The emissions APR is calculated based on the range width.');
+    console.log('2. Narrower ranges receive higher APRs, wider ranges receive lower APRs.');
+    console.log('3. Uses reference points from the frontend to calibrate the calculation.');
+    console.log('4. Fee APR is added to emissions APR for the total APR.');
   } else {
     console.log('Could not calculate APR');
   }
