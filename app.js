@@ -10,10 +10,10 @@ const DAYS_PER_YEAR = 365;
 // Reference values from frontend
 const REFERENCE = [
   {
-    lowerPrice: 2002.24,
-    upperPrice: 2303.1,
-    width: 300.86,
-    apr: 149.62
+    lowerPrice: 2002,
+    upperPrice: 2126.04,
+    width: 124,
+    apr: 81.12
   },
   {
     lowerPrice: 2083.95,
